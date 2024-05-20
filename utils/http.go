@@ -23,7 +23,12 @@ var (
 
 func URLJoin(base string, paths ...string) string {
 	p := path.Join(paths...)
-	return fmt.Sprintf("%s/%s", strings.TrimRight(base, "/"), strings.TrimLeft(p, "/"))
+	out := fmt.Sprintf("%s/%s", strings.TrimRight(base, "/"), strings.TrimLeft(p, "/"))
+	// make sure we dont change the trailing slash
+	if strings.HasSuffix(paths[len(paths)-1], "/") {
+		out += "/"
+	}
+	return out
 }
 
 func MakeHTTPS(url string) string {

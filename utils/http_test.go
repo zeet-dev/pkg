@@ -21,3 +21,18 @@ func TestHttps(t *testing.T) {
 		})
 	}
 }
+
+func TestUrlJoin(t *testing.T) {
+	var tests = [][]string{
+		{"https://lol.com", "lol/lol"},
+		{"https://lol.com", "/lol/lol"},
+		{"https://lol.com", ""},
+		{"https://lol.com", "/lol/lol/"},
+	}
+
+	for _, tt := range tests {
+		t.Run("Test name", func(t *testing.T) {
+			fmt.Println(utils.URLJoin(tt[0], tt[1:]...))
+		})
+	}
+}
