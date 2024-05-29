@@ -166,32 +166,11 @@ func runErrorsStack(pass *analysis.Pass) (interface{}, error) {
 		*/
 		// Iterate through the statements in the block
 		if blockStmt, ok := n.(*ast.BlockStmt); ok {
-			for i := 0; i < len(blockStmt.List)-1; i++ {
+			for i := 0; i < len(blockStmt.List); i++ {
 				currentStmt := blockStmt.List[i]
-				nextStmt := blockStmt.List[i+1]
-
-				// Step 1: Identify the assignment statement
-				assignStmt, ok := currentStmt.(*ast.AssignStmt)
-				if !ok {
-					continue
-				}
-
-				// Ensure the assignment involves a function call
-				callExpr, ok := assignStmt.Rhs[len(assignStmt.Rhs)-1].(*ast.CallExpr)
-				if !ok {
-					continue
-				}
-				if isWrappedError(callExpr, pass) {
-					// The error is already wrapped, continue
-					continue
-				}
-				lhs, ok := assignStmt.Lhs[len(assignStmt.Lhs)-1].(*ast.Ident)
-				if !ok {
-					continue
-				}
 
 				// Step 2: Check if the next statement is the specific 'if' pattern
-				ifStmt, ok := nextStmt.(*ast.IfStmt)
+				ifStmt, ok := currentStmt.(*ast.IfStmt)
 				if !ok || ifStmt.Init != nil || len(ifStmt.Body.List) != 1 {
 					continue
 				}
@@ -204,7 +183,7 @@ func runErrorsStack(pass *analysis.Pass) (interface{}, error) {
 
 				// Ensure the 'if' statement condition checks the error variable from the assignment
 				ident, ok := binaryExpr.X.(*ast.Ident)
-				if !ok || ident.Name != lhs.Name {
+				if !ok { // || ident.Name != lhs.Name {
 					continue
 				}
 
@@ -221,6 +200,19 @@ func runErrorsStack(pass *analysis.Pass) (interface{}, error) {
 
 				// check if the error is returned directly
 				if retIdent, ok := retStmt.Results[len(retStmt.Results)-1].(*ast.Ident); ok && retIdent.Name == ident.Name {
+					// check if the error is wrapped from the last assignment
+					assignStmt, ok := retIdent.Obj.Decl.(*ast.AssignStmt)
+					if !ok {
+						continue
+					}
+					callExpr, ok := assignStmt.Rhs[len(assignStmt.Rhs)-1].(*ast.CallExpr)
+					if !ok {
+						continue
+					}
+					if isWrappedError(callExpr, pass) {
+						continue
+					}
+
 					// Found the pattern: err assignment followed by if check and return
 					pass.Report(analysis.Diagnostic{
 						Pos:     retIdent.Pos(),
@@ -291,9 +283,17 @@ An identifier is considered to be a wrapped error the package it belongs to is i
 */
 func identIsWrappedError(id *ast.Ident, pass *analysis.Pass) bool {
 	if obj := pass.TypesInfo.ObjectOf(id); obj != nil {
-		if pkg := obj.Pkg(); pkg != nil {
+		pkgPath := ""
+		// in case of named imports
+		if pkgName, ok := obj.(*types.PkgName); ok {
+			pkgPath = pkgName.Imported().Path()
+		} else if pkg := obj.Pkg(); pkg != nil {
+			pkgPath = pkg.Path()
+		}
+
+		if pkgPath != "" {
 			for _, allowedPkg := range errorsStackAllowedPackages {
-				if strings.HasPrefix(pkg.Path(), allowedPkg) {
+				if strings.HasPrefix(pkgPath, allowedPkg) {
 					return true
 				}
 			}
