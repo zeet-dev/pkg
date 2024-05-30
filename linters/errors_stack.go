@@ -6,6 +6,7 @@ import (
 	"go/printer"
 	"go/token"
 	"go/types"
+	"regexp"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -21,20 +22,26 @@ var ErrorsStackAnalyzer = &analysis.Analyzer{
 }
 
 func init() {
-	ErrorsStackAnalyzer.Flags.StringVar(&ErrorsStackAllowedPackagesFlag, "allowed-packages", "github.com/pkg/errors",
+	ErrorsStackAnalyzer.Flags.StringVar(&errorsStackAllowedPackagesFlag, "allowed-packages", "github.com/pkg/errors",
 		"comma separated list of packages that are allowed to return errors without wrapping them with stacktrace")
+	ErrorsStackAnalyzer.Flags.StringVar(&errorsStackIgnorePathRegexFlag, "ignore-path-regex", "", "regex pattern to ignore files from the analysis")
 }
 
 var (
-	ErrorsStackAllowedPackagesFlag = ""
+	errorsStackAllowedPackagesFlag = ""
+	errorsStackIgnorePathRegexFlag = ""
 )
 
 var (
 	errorsStackAllowedPackages = []string{}
+	errorsStackIgnorePathRegex *regexp.Regexp
 )
 
 func runErrorsStack(pass *analysis.Pass) (interface{}, error) {
-	errorsStackAllowedPackages = strings.Split(ErrorsStackAllowedPackagesFlag, ",")
+	errorsStackAllowedPackages = strings.Split(errorsStackAllowedPackagesFlag, ",")
+	if errorsStackIgnorePathRegexFlag != "" {
+		errorsStackIgnorePathRegex = regexp.MustCompile(errorsStackIgnorePathRegexFlag)
+	}
 
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
@@ -45,6 +52,12 @@ func runErrorsStack(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	insp.Preorder(nodeFilter, func(n ast.Node) {
+		if errorsStackIgnorePathRegex != nil {
+			if errorsStackIgnorePathRegex.MatchString(pass.Fset.Position(n.Pos()).Filename) {
+				return
+			}
+		}
+
 		/*
 			Matches the following pattern:
 			return errorableFunc()
@@ -166,7 +179,8 @@ func runErrorsStack(pass *analysis.Pass) (interface{}, error) {
 		*/
 		// Iterate through the statements in the block
 		if blockStmt, ok := n.(*ast.BlockStmt); ok {
-			for i := 0; i < len(blockStmt.List); i++ {
+			for i := 1; i < len(blockStmt.List); i++ {
+				prevStmt := blockStmt.List[i-1]
 				currentStmt := blockStmt.List[i]
 
 				// Step 2: Check if the next statement is the specific 'if' pattern
@@ -201,11 +215,17 @@ func runErrorsStack(pass *analysis.Pass) (interface{}, error) {
 				// check if the error is returned directly
 				if retIdent, ok := retStmt.Results[len(retStmt.Results)-1].(*ast.Ident); ok && retIdent.Name == ident.Name {
 					// check if the error is wrapped from the last assignment
-					assignStmt, ok := retIdent.Obj.Decl.(*ast.AssignStmt)
+					prevStmt, ok := prevStmt.(*ast.AssignStmt)
 					if !ok {
 						continue
 					}
-					callExpr, ok := assignStmt.Rhs[len(assignStmt.Rhs)-1].(*ast.CallExpr)
+					prevErr := prevStmt.Lhs[len(prevStmt.Lhs)-1]
+					if prevErrIdent, ok := prevErr.(*ast.Ident); !ok || prevErrIdent.Obj.Decl != retIdent.Obj.Decl {
+						// ignore complex assignments for now
+						continue
+					}
+
+					callExpr, ok := prevStmt.Rhs[len(prevStmt.Rhs)-1].(*ast.CallExpr)
 					if !ok {
 						continue
 					}
